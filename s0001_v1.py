@@ -13,26 +13,25 @@ Author: B Shashank
 Date: September 07, 2023
 """
 import configparser
+import json
 import pandas as pd
 
 
 # Function to get entry price based on provided conditions
-def get_entry_price(tr_date, tr_time, week_expiry, otype, strike_price):
+def get_entry_price(tr_date, tr_time, otype, strike_price):
     """
     Get the entry price based on provided conditions.
     Parameters:
         tr_date (str): The transaction date.
         tr_time (str): The transaction time.
-        week_expiry (int): The week of expiry.
         otype (str): The option type (CE or PE).
         strike_price (float): The strike price.
     Returns:
         float or None: The entry price if found, otherwise None.
     """
     filtered_data = fnoieddf[
-          (fnoieddf["tr_date"] == tr_date)
+        (fnoieddf["tr_date"] == tr_date)
         & (fnoieddf["tr_time"] == tr_time)
-        & (fnoieddf["week_expiry"] == week_expiry)
         & (fnoieddf["otype"] == otype)
         & (fnoieddf["strike_price"] == strike_price)
     ]
@@ -47,7 +46,6 @@ def get_entry_price(tr_date, tr_time, week_expiry, otype, strike_price):
 # Function to apply exit conditions and calculate exit parameter
 def apply_exit_conditions(
     tr_date,
-    week_expiry,
     strike_price,
     otype,
     target,
@@ -61,7 +59,6 @@ def apply_exit_conditions(
     Parameters:
         tr_date (str): The transaction date.
         tr_time (str): The transaction time.
-        week_expiry (int): The week of expiry.
         strike_price (float): The strike price.
         otype (str): The option type (CE or PE).
         target (float): The target price.
@@ -78,7 +75,6 @@ def apply_exit_conditions(
         (fnoieddf["tr_date"] == tr_date)
         & (fnoieddf["tr_time"] > entry_time)
         & (fnoieddf["tr_time"] <= squareoff_time)
-        & (fnoieddf["week_expiry"] == week_expiry)
         & (fnoieddf["strike_price"] == strike_price)
         & (fnoieddf["otype"] == otype)
         & ((fnoieddf["tr_low"] <= target) | (fnoieddf["tr_high"] >= stoploss))
@@ -89,15 +85,14 @@ def apply_exit_conditions(
     if not stoploss_target_sqoff_filter.empty:
         stoploss_target_sqoff = stoploss_target_sqoff_filter.iloc[0]
 
-        if stoploss_target_sqoff["tr_time"] > entry_time:
-            if stoploss_target_sqoff["tr_low"] <= target:
-                exit_type = "TARGET"
-                exit_price = target
-                exit_time = stoploss_target_sqoff["tr_time"]
-            elif stoploss_target_sqoff["tr_high"] >= stoploss:
-                exit_type = "STOPLOSS"
-                exit_price = stoploss
-                exit_time = stoploss_target_sqoff["tr_time"]
+        if stoploss_target_sqoff["tr_low"] <= target:
+            exit_type = "TARGET"
+            exit_price = target
+            exit_time = stoploss_target_sqoff["tr_time"]
+        elif stoploss_target_sqoff["tr_high"] >= stoploss:
+            exit_type = "STOPLOSS"
+            exit_price = stoploss
+            exit_time = stoploss_target_sqoff["tr_time"]
         if stoploss_target_sqoff["tr_time"] == squareoff_time:
             exit_type = "SQOFF"
             exit_price = stoploss_target_sqoff["tr_close"]
@@ -107,7 +102,7 @@ def apply_exit_conditions(
 
 
 # Function to prepare bankNifty DataFrame
-def prepare_bank_nifty(bnifty_df, entry_time, week_expiry):
+def prepare_bank_nifty(bnifty_df, entry_time):
     """Combines transaction time twice to get a column of time to
     match with CE and PE and
     then it assigns otype CE and PE to all the available transaction dates
@@ -127,7 +122,6 @@ def prepare_bank_nifty(bnifty_df, entry_time, week_expiry):
         lambda row: get_entry_price(
             row["tr_date"],
             row["tr_time"],
-            week_expiry,
             row["otype"],
             row["strike_price"],
         ),
@@ -137,11 +131,11 @@ def prepare_bank_nifty(bnifty_df, entry_time, week_expiry):
 
 
 # Function to calculate target and stoploss columns
-def calculate_target_stoploss(target_df):
+def calculate_target_stoploss(stoploss_value, target_value, target_df):
     """It calculates the target and stoploss values"""
     target_df = target_df.assign(
-        target=target_df["entry_price"] * 0.5,
-        stoploss=target_df["entry_price"] * 1.5
+        target=target_df["entry_price"] * target_value,
+        stoploss=target_df["entry_price"] * stoploss_value,
     )
     return target_df
 
@@ -156,8 +150,7 @@ def add_lotsize_column(lotsize_df, fnoied_df):
     """
     filter_dates_list = fnoied_df["tr_date"].unique()
     lotsize_df = lotsize_df[lotsize_df["tr_date"].isin(filter_dates_list)]
-    date_lotsize_mapping = dict(zip(lotsize_df["tr_date"],
-                                    lotsize_df["Lot_Size"]))
+    date_lotsize_mapping = dict(zip(lotsize_df["tr_date"], lotsize_df["Lot_Size"]))
     fnoied_df["lotsize"] = fnoied_df["tr_date"].map(date_lotsize_mapping)
     return fnoied_df
 
@@ -180,19 +173,23 @@ def main():
         "%d-%m-%Y"
     )
     lotsize_df.rename(columns={"BankNifty": "Lot_Size"}, inplace=True)
+    # Getting stoploss target values from config
+    stoploss_target_combo = json.loads(TARGET_STOPLOSS_VALUES)
+    stoploss_value = stoploss_target_combo[0][0]
+    target_value = stoploss_target_combo[0][1]
 
     # Step 1 and 2: Prepare bankNifty DataFrame
-    bank_nifty_df = prepare_bank_nifty(bnifty_df, ENTRY_TIME, WEEK_EXPIRY)
+    bank_nifty_df = prepare_bank_nifty(bnifty_df, ENTRY_TIME)
 
     # Step 3: Calculate target and stoploss columns
-    bank_nifty_df = calculate_target_stoploss(bank_nifty_df)
+    bank_nifty_df = calculate_target_stoploss(
+        stoploss_value, target_value, bank_nifty_df
+    )
 
     # Step 4: Apply exit conditions
-    bank_nifty_df[["exit_type",
-     "exit_price", "exit_time"]] = bank_nifty_df.apply(
+    bank_nifty_df[["exit_type", "exit_price", "exit_time"]] = bank_nifty_df.apply(
         lambda row: apply_exit_conditions(
             row["tr_date"],
-            WEEK_EXPIRY,
             row["strike_price"],
             row["otype"],
             row["target"],
@@ -214,10 +211,13 @@ def main():
         "expiry_date",
         "tr_segment",
     ]
-    bank_nifty_df = bank_nifty_df.drop(columns=columns_to_drop,
-                                       errors="ignore")
+    bank_nifty_df = bank_nifty_df.drop(columns=columns_to_drop, errors="ignore")
+    # Step 6: Adding Profit and Loss Column
+    bank_nifty_df["PNL"] = (
+        bank_nifty_df["entry_price"] - bank_nifty_df["exit_price"]
+    ) * bank_nifty_df["lotsize"]
     # Save final DataFrame to CSV
-    output_csv_path = "BankNifty.csv"
+    output_csv_path = "S0001_v1.csv"
     bank_nifty_df.to_csv(output_csv_path, index=False)
 
 
@@ -228,6 +228,13 @@ if __name__ == "__main__":
     ENTRY_TIME = str(config.get("params", "entry_time"))
     WEEK_EXPIRY = int(config.get("params", "week_expiry"))
     SQUAREOFF_TIME = str(config.get("params", "squareoff_time"))
+    TARGET_STOPLOSS_VALUES = config.get("params", "stoploss_target_combo")
+    TR_SEGMENT = int(config.get("params", "tr_segment"))
+
     EXCEL_FILE_PATH = "FNO_DATA.xlsx"
     fnoieddf = pd.read_excel(EXCEL_FILE_PATH)
+    fnoieddf = fnoieddf[
+        (fnoieddf["week_expiry"] == WEEK_EXPIRY)
+        & (fnoieddf["tr_segment"] == TR_SEGMENT)
+    ]
     main()

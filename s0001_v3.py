@@ -14,8 +14,8 @@ Date: September 07, 2023
 """
 import configparser
 import sys
+import json
 import pandas as pd
-
 
 
 def get_spot_close_price(row, bnifty_df, entry_time_or_new_entry_time, mode):
@@ -55,7 +55,13 @@ def get_spot_close_price(row, bnifty_df, entry_time_or_new_entry_time, mode):
 
 
 def get_target_stoploss_spotprice(
-    entry_time_or_new_entry_time, week_expiry, bnifty_df, mode, tr_date=None, otype=None
+    stoploss_value,
+    target_value,
+    entry_time_or_new_entry_time,
+    bnifty_df,
+    mode,
+    tr_date=None,
+    otype=None,
 ):
     """
     Get filtered data based on specific conditions and matching dates.
@@ -74,10 +80,7 @@ def get_target_stoploss_spotprice(
     if mode == "old":
         # Use the provided entry_time
         find_target_stoploss = (
-            fnoieddf.loc[
-                (fnoieddf["tr_time"] == entry_time_or_new_entry_time)
-                & (fnoieddf["week_expiry"] == week_expiry)
-            ]
+            fnoieddf.loc[(fnoieddf["tr_time"] == entry_time_or_new_entry_time)]
             .groupby(["tr_date", "week_expiry", "otype"])
             .apply(
                 lambda group: group[group["tr_close"] >= 200].nsmallest(1, "tr_close")
@@ -86,8 +89,8 @@ def get_target_stoploss_spotprice(
         )
         find_target_stoploss["entry_price"] = find_target_stoploss["tr_close"]
         find_target_stoploss = find_target_stoploss.assign(
-            target=find_target_stoploss["entry_price"] * 0.5,
-            stoploss=find_target_stoploss["entry_price"] * 1.5,
+            target=find_target_stoploss["entry_price"] * target_value,
+            stoploss=find_target_stoploss["entry_price"] * stoploss_value,
         )
         find_target_stoploss["spot_price"] = find_target_stoploss.apply(
             lambda row: get_spot_close_price(
@@ -100,7 +103,6 @@ def get_target_stoploss_spotprice(
         find_target_stoploss = (
             fnoieddf.loc[
                 (fnoieddf["tr_time"] == entry_time_or_new_entry_time)
-                & (fnoieddf["week_expiry"] == week_expiry)
                 & (fnoieddf["tr_date"] == tr_date)
                 & (fnoieddf["otype"] == otype)
             ]
@@ -112,8 +114,8 @@ def get_target_stoploss_spotprice(
         )
         find_target_stoploss["entry_price"] = find_target_stoploss["tr_close"]
         find_target_stoploss = find_target_stoploss.assign(
-            target=find_target_stoploss["entry_price"] * 0.5,
-            stoploss=find_target_stoploss["entry_price"] * 1.5,
+            target=find_target_stoploss["entry_price"] * target_value,
+            stoploss=find_target_stoploss["entry_price"] * stoploss_value,
         )
         find_target_stoploss["spot_price"] = find_target_stoploss.apply(
             lambda row: get_spot_close_price(
@@ -126,7 +128,6 @@ def get_target_stoploss_spotprice(
 
 def apply_exit_conditions(
     tr_date,
-    week_expiry,
     strike_price,
     otype,
     target,
@@ -164,7 +165,6 @@ def apply_exit_conditions(
         (fnoieddf["tr_date"] == tr_date)
         & (fnoieddf["tr_time"] > time_to_filter)
         & (fnoieddf["tr_time"] <= squareoff_time)
-        & (fnoieddf["week_expiry"] == week_expiry)
         & (fnoieddf["strike_price"] == strike_price)
         & (fnoieddf["otype"] == otype)
         & ((fnoieddf["tr_low"] <= target) | (fnoieddf["tr_high"] >= stoploss))
@@ -192,6 +192,20 @@ def apply_exit_conditions(
     return exit_type, exit_price, exit_time
 
 
+def add_lotsize_column(lotsize_df, fnoied_df):
+    """It matches the dates from the resulting dataframe
+      with the lotsize dataframe and
+      takes the respective values of lotsize column
+    and places it in the resulting data frame
+    Returns lotsize column
+    """
+    filter_dates_list = fnoied_df["tr_date"].unique()
+    lotsize_df = lotsize_df[lotsize_df["tr_date"].isin(filter_dates_list)]
+    date_lotsize_mapping = dict(zip(lotsize_df["tr_date"], lotsize_df["Lot_Size"]))
+    fnoied_df["lotsize"] = fnoied_df["tr_date"].map(date_lotsize_mapping)
+    return fnoied_df
+
+
 def main():
     """
     Main function to execute the data processing and filtering.
@@ -199,12 +213,23 @@ def main():
     Reads configuration, processes data, and saves the filtered data to a CSV file.
     """
     bnifty_df = pd.read_csv("spot_data.csv")
+    lotsize_df = pd.read_csv("LotSize_Data.csv")
     fnoieddf["tr_time"] = fnoieddf["tr_time"].astype(str)
     fnoieddf["tr_date"] = pd.to_datetime(fnoieddf["tr_date"]).dt.strftime("%d-%m-%Y")
+    lotsize_df.rename(columns={"Date": "tr_date"}, inplace=True)
+    lotsize_df["tr_date"] = pd.to_datetime(lotsize_df["tr_date"]).dt.strftime(
+        "%d-%m-%Y"
+    )
+    lotsize_df.rename(columns={"BankNifty": "Lot_Size"}, inplace=True)
+
+    # Getting stoploss target values from config
+    stoploss_target_combo = json.loads(TARGET_STOPLOSS_VALUES)
+    stoploss_value = stoploss_target_combo[0][0]
+    target_value = stoploss_target_combo[0][1]
 
     # Initialize an empty DataFrame to store the results
     find_exit_conditions = get_target_stoploss_spotprice(
-        ENTRY_TIME, WEEK_EXPIRY, bnifty_df, mode="old"
+        stoploss_value, target_value, ENTRY_TIME, bnifty_df, mode="old"
     )
 
     # Step 2: Filter the data and find the exit conditions
@@ -213,7 +238,6 @@ def main():
     ] = find_exit_conditions.apply(
         lambda row: apply_exit_conditions(
             row["tr_date"],
-            WEEK_EXPIRY,
             row["strike_price"],
             row["otype"],
             row["target"],
@@ -240,8 +264,9 @@ def main():
 
             # Get data using the new entry time, tr_date, and otype
             find_stoploss_rows = get_target_stoploss_spotprice(
+                stoploss_value,
+                target_value,
                 new_entry_time,
-                WEEK_EXPIRY,
                 bnifty_df,
                 mode="new",
                 tr_date=new_tr_date,
@@ -253,7 +278,6 @@ def main():
             ] = find_exit_conditions.apply(
                 lambda row: apply_exit_conditions(
                     row["tr_date"],
-                    WEEK_EXPIRY,
                     row["strike_price"],
                     row["otype"],
                     row["target"],
@@ -264,9 +288,26 @@ def main():
                 axis=1,
                 result_type="expand",
             )
-    
-    columns_to_drop = ['tr_open', 'tr_high', 'tr_low', 'tr_close', 'week_expiry','expiry_date','month_expiry', 'tr_segment']
-    find_exit_conditions = find_exit_conditions.drop(columns=columns_to_drop, errors='ignore')
+
+    columns_to_drop = [
+        "tr_open",
+        "tr_high",
+        "tr_low",
+        "tr_close",
+        "week_expiry",
+        "expiry_date",
+        "month_expiry",
+        "tr_segment",
+    ]
+    find_exit_conditions = find_exit_conditions.drop(
+        columns=columns_to_drop, errors="ignore"
+    )
+    # Step 5: Add lot size column and prepare final DataFrame
+    find_exit_conditions = add_lotsize_column(lotsize_df, find_exit_conditions)
+    # Step 6: Adding Profit and Loss Column
+    find_exit_conditions["PNL"] = (
+        find_exit_conditions["entry_price"] - find_exit_conditions["exit_price"]
+    ) * find_exit_conditions["lotsize"]
     # Save the DataFrame to a CSV file if needed
     find_exit_conditions.to_csv("S0001_v3.csv", index=False)
 
@@ -278,8 +319,14 @@ if __name__ == "__main__":
     ENTRY_TIME = str(config.get("params", "entry_time"))
     WEEK_EXPIRY = int(config.get("params", "week_expiry"))
     SQUAREOFF_TIME = str(config.get("params", "squareoff_time"))
+    TR_SEGMENT = int(config.get("params", "tr_segment"))
+    TARGET_STOPLOSS_VALUES = config.get("params", "stoploss_target_combo")
+
     # reading the csv and excel file
     EXCEL_FILE_PATH = "FNO_DATA.xlsx"
     fnoieddf = pd.read_excel(EXCEL_FILE_PATH)
-    lotsize_df = pd.read_csv("LotSize_Data.csv")
+    fnoieddf = fnoieddf[
+        (fnoieddf["week_expiry"] == WEEK_EXPIRY)
+        & (fnoieddf["tr_segment"] == TR_SEGMENT)
+    ]
     main()
