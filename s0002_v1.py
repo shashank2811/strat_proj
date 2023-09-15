@@ -209,6 +209,17 @@ def main():
     find_exit_conditions["PNL"] = (
         find_exit_conditions["entry_price"] - find_exit_conditions["exit_price"]
     ) * find_exit_conditions["lotsize"]
+    columns_to_drop = [
+        "tr_open",
+        "tr_high",
+        "tr_low",
+        "tr_close",
+        "expiry_date",
+        "month_expiry",
+    ]
+    find_exit_conditions = find_exit_conditions.drop(
+        columns=columns_to_drop, errors="ignore"
+    )
 
     output_csv_path = "S0002_v1.csv"
     find_exit_conditions.to_csv(output_csv_path, index=False)
