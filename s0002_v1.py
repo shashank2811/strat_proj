@@ -214,10 +214,8 @@ def main():
         "tr_high",
         "tr_low",
         "tr_close",
-        "week_expiry",
         "expiry_date",
         "month_expiry",
-        "tr_segment",
     ]
     find_exit_conditions = find_exit_conditions.drop(
         columns=columns_to_drop, errors="ignore"
