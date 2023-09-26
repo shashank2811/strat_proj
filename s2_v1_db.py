@@ -96,7 +96,12 @@ def get_closest_strike_price(
         target=find_target_stoploss["entry_price"] * target_value,
         stoploss=find_target_stoploss["entry_price"] * stoploss_value,
     )
-
+    find_target_stoploss["target"] = find_target_stoploss["target"].apply(
+    lambda x: round(x, 3) if x is not None else None
+    )
+    find_target_stoploss["stoploss"] = find_target_stoploss["stoploss"].apply(
+    lambda x: round(x, 3) if x is not None else None
+    )
     # Add an 'entry_type' column with the value "SELL"
     find_target_stoploss["entry_type"] = "SELL"
 
@@ -236,16 +241,7 @@ def process_data_for_date(bnifty_df, fnoieddf, lotsize_df):
     stoploss_value = stoploss_target_combo[0][0]
     target_value = stoploss_target_combo[0][1]
 
-    # # Step 1 : Finding Spot close value
-    find_spot_close = bnifty_df[bnifty_df["tr_time"] == ENTRY_TIME]
-    if find_spot_close.empty:
-        find_spot_close["spot_price"] = None
-    else:
-        find_spot_close["spot_price"] = find_spot_close.apply(
-            lambda row: get_spot_close_price(row, ENTRY_TIME, bnifty_df), axis=1
-        )
-
-    # Step 3 grouping the date and otype  and applying to each row of
+    # Step 1 grouping the date and otype  and applying to each row of
     # fnoieddf df and resetting indexes.
     find_close_price = (
         fnoieddf.groupby(["tr_date", "otype"])
@@ -256,15 +252,11 @@ def process_data_for_date(bnifty_df, fnoieddf, lotsize_df):
         )
         .reset_index(drop=True)
     )
-    # merging spot close price onto the dataframe
-    find_exit_conditions = find_close_price.merge(
-        find_spot_close[["tr_date", "spot_price"]], on="tr_date"
-    )
-
-    # Step 4 EXIT CONDITION
-    find_exit_conditions[
+    print(find_close_price)
+    # Step 2 EXIT CONDITION
+    find_close_price[
         ["exit_type", "exit_price", "exit_time"]
-    ] = find_exit_conditions.apply(
+    ] = find_close_price.apply(
         lambda row: apply_exit_conditions(
             row["tr_date"],
             row["otype"],
@@ -278,19 +270,37 @@ def process_data_for_date(bnifty_df, fnoieddf, lotsize_df):
         axis=1,
         result_type="expand",
     )
-    # Step 5: Add lot size column and prepare final DataFrame
-    find_exit_conditions = add_lotsize_column(lotsize_df, find_exit_conditions)
-    # Step 6: Adding Profit and Loss Column
+    # Step 3: Add lot size column and prepare final DataFrame
+    find_exit_conditions = add_lotsize_column(lotsize_df, find_close_price)
+    # Step 4: Adding Profit and Loss Column
     # Convert the exit_price column to decimal.Decimal
     find_exit_conditions["exit_price"] = find_exit_conditions["exit_price"].apply(
         decimal.Decimal
     )
 
-    # Calculate PNL
+    #Step 5: Calculate PNL
     find_exit_conditions["PNL"] = (
         find_exit_conditions["entry_price"] - find_exit_conditions["exit_price"]
     ) * find_exit_conditions["lotsize"]
 
+    #Step 6: Find the spot price
+    find_spot_close = bnifty_df[bnifty_df["tr_time"] == ENTRY_TIME]
+    find_spot_close["spot_price"] = find_spot_close.apply(
+            lambda row: get_spot_close_price(row, ENTRY_TIME, bnifty_df), axis=1
+        )
+    #merge the columns by retaining the left side of it
+    find_exit_conditions = find_exit_conditions.merge(
+        find_spot_close[["tr_date", "spot_price"]], on="tr_date",how="left"
+    )
+    find_exit_conditions["PNL"] = find_exit_conditions["PNL"].apply(
+    lambda x: round(x, 3) if x is not None else None
+    )
+    find_exit_conditions["entry_price"] = find_exit_conditions["entry_price"].apply(
+    lambda x: round(x, 3) if x is not None else None
+    )
+    find_exit_conditions["exit_price"] = find_exit_conditions["exit_price"].apply(
+    lambda x: round(x, 3) if x is not None else None
+    )
     columns_to_drop = [
         "tr_open",
         "tr_high",
@@ -304,6 +314,7 @@ def process_data_for_date(bnifty_df, fnoieddf, lotsize_df):
     find_exit_conditions = find_exit_conditions.drop(
         columns=columns_to_drop, errors="ignore"
     )
+    del find_exit_conditions["Index"]
     print(find_exit_conditions)
     return find_exit_conditions
 
@@ -403,7 +414,7 @@ def main():
         fnoieddf = pd.DataFrame(db_results2)
         print(fnoieddf)
 
-        if (bnifty_df.empty and fnoieddf.empty) or bnifty_df.empty:
+        if (bnifty_df.empty and fnoieddf.empty):
             continue
         data_for_date = process_data_for_date(bnifty_df, fnoieddf, lotsize_df)
         # Append data_for_date to the list of DataFrames
@@ -411,7 +422,6 @@ def main():
 
     # Concatenate all DataFrames into a single DataFrame
     s0002_v1_2019 = pd.concat(data_2019, ignore_index=True)
-    s0002_v1_2019 = s0002_v1_2019.round(3)
     print(s0002_v1_2019)
 
     # Output data to a single CSV file for all dates
