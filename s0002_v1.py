@@ -35,7 +35,7 @@ def get_spot_close_price(row, entry_time, bnifty_df):
         (bnifty_df["tr_date"] == row["tr_date"]) & (bnifty_df["tr_time"] == entry_time)
     ]
     # Extract the spot prices if data is found, otherwise return NaN
-    # Extract the spot price if data is found, otherwise return NaN
+    print(filtered_data_spot_price)
     if not filtered_data_spot_price.empty:
         spot_price = filtered_data_spot_price.iloc[0]["tr_close"]
     else:
@@ -43,7 +43,9 @@ def get_spot_close_price(row, entry_time, bnifty_df):
     return spot_price
 
 
-def get_closest_strike_price(stoploss_value, target_value, group, entry_time):
+def get_closest_strike_price(
+    stoploss_value, target_value, group, entry_time, closest_val
+):
     """
     Get filtered data based on specific conditions and matching dates.
 
@@ -58,9 +60,10 @@ def get_closest_strike_price(stoploss_value, target_value, group, entry_time):
     """
     filtered_group = group[(group["tr_time"] == entry_time)]
     find_target_stoploss = filtered_group.loc[
-        filtered_group["tr_close"].sub(200).abs().idxmin()
+        filtered_group["tr_close"].sub(closest_val).abs().idxmin()
     ]
     find_target_stoploss["entry_price"] = find_target_stoploss["tr_close"]
+    print(find_target_stoploss)
     # converted series into a dataframe using transpose
     find_target_stoploss = pd.DataFrame(find_target_stoploss).transpose()
     find_target_stoploss = find_target_stoploss.assign(
@@ -92,20 +95,21 @@ def apply_exit_conditions(
     Returns:
         tuple: Exit type, exit price, exit time.
     """
+    print(tr_date, otype, target, stoploss, entry_time, squareoff_time)
     # finds the closest strike prices from the dataframe
     closest_strike_price = find_close_price[
         (find_close_price["tr_date"] == tr_date) & (find_close_price["otype"] == otype)
     ]["strike_price"].values[0]
-
+    print("STRIKE PRICE VALUES", closest_strike_price)
     stoploss_target_sqoff_filter = fnoieddf.loc[
         (fnoieddf["tr_date"] == tr_date)
         & (fnoieddf["tr_time"] > entry_time)
-        & (fnoieddf["tr_time"] <= squareoff_time)
+        & (fnoieddf["tr_time"] < squareoff_time)
         & (fnoieddf["strike_price"] == closest_strike_price)
         & (fnoieddf["otype"] == otype)
         & ((fnoieddf["tr_low"] <= target) | (fnoieddf["tr_high"] >= stoploss))
     ]
-
+    print(stoploss_target_sqoff_filter)
     exit_type = None
     exit_price = None
     exit_time = None
@@ -113,6 +117,7 @@ def apply_exit_conditions(
         stoploss_target_sqoff = stoploss_target_sqoff_filter.iloc[
             0
         ]  # Take the first matching row
+        print(stoploss_target_sqoff)
         if stoploss_target_sqoff["tr_low"] <= target:
             exit_type = "TARGET"
             exit_price = target
@@ -121,9 +126,16 @@ def apply_exit_conditions(
             exit_type = "STOPLOSS"
             exit_price = stoploss
             exit_time = stoploss_target_sqoff["tr_time"]
-        if stoploss_target_sqoff["tr_time"] == squareoff_time:
+    if stoploss_target_sqoff_filter.empty:
+        sqoff_row = fnoieddf.loc[
+            (fnoieddf["tr_date"] == tr_date)
+            & (fnoieddf["tr_time"] == squareoff_time)
+            & (fnoieddf["strike_price"] == closest_strike_price)
+            & (fnoieddf["otype"] == otype)
+        ]
+        if not sqoff_row.empty:
             exit_type = "SQOFF"
-            exit_price = stoploss_target_sqoff["tr_close"]
+            exit_price = sqoff_row.iloc[0]["tr_close"]
             exit_time = squareoff_time
 
     return exit_type, exit_price, exit_time
@@ -168,8 +180,6 @@ def main():
     find_spot_close["spot_price"] = find_spot_close.apply(
         lambda row: get_spot_close_price(row, ENTRY_TIME, bnifty_df), axis=1
     )
-    # Step 2 rounding to nearest 100
-    find_spot_close["spot_price"] = (find_spot_close["spot_price"] // 100) * 100
 
     # Step 3 grouping the date and otype  and applying to each row of
     # fnoieddf df and resetting indexes.
@@ -177,7 +187,7 @@ def main():
         fnoieddf.groupby(["tr_date", "otype"])
         .apply(
             lambda group: get_closest_strike_price(
-                stoploss_value, target_value, group, ENTRY_TIME
+                stoploss_value, target_value, group, ENTRY_TIME, CLOSEST_VAL
             )
         )
         .reset_index(drop=True)
@@ -216,12 +226,15 @@ def main():
         "tr_close",
         "expiry_date",
         "month_expiry",
+        "tr_segment",
+        "week_expiry",
     ]
     find_exit_conditions = find_exit_conditions.drop(
         columns=columns_to_drop, errors="ignore"
     )
+    print(find_exit_conditions)
 
-    output_csv_path = "S0002_v1.csv"
+    output_csv_path = "sc0002_v1.csv"
     find_exit_conditions.to_csv(output_csv_path, index=False)
 
 
@@ -234,6 +247,7 @@ if __name__ == "__main__":
     SQUAREOFF_TIME = str(config.get("params", "squareoff_time"))
     TR_SEGMENT = int(config.get("params", "tr_segment"))
     TARGET_STOPLOSS_VALUES = config.get("params", "stoploss_target_combo")
+    CLOSEST_VAL = int(config.get("params", "closest_val"))
 
     fnoieddf = pd.read_excel("FNO_DATA.xlsx")
     fnoieddf = fnoieddf[
