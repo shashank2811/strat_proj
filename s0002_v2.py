@@ -209,7 +209,7 @@ def apply_entry_time_conditions(
     return entry_time_new
 
 def apply_exit_conditions(
-    tr_date, strike_price, otype,stoploss, entry_time, squareoff_time, fnoieddf
+    tr_date, strike_price, otype,stoploss,target,entry_time, squareoff_time, fnoieddf
 ):
     """
     Apply exit conditions and calculate exit parameters for a given row.
@@ -240,7 +240,7 @@ def apply_exit_conditions(
         & (fnoieddf["tr_time"] <= squareoff_time)
         & (fnoieddf["strike_price"] == strike_price)
         & (fnoieddf["otype"] == otype)
-        & (fnoieddf["tr_high"] >= stoploss)
+        & ((fnoieddf["tr_low"] <= target) | (fnoieddf["tr_high"] >= stoploss))
     ]
     exit_type = None
     exit_price = None
@@ -254,6 +254,10 @@ def apply_exit_conditions(
         if stoploss_target_sqoff["tr_high"] >= stoploss:
             exit_type = "STOPLOSS"
             exit_price = stoploss
+            exit_time = stoploss_target_sqoff["tr_time"]
+        elif stoploss_target_sqoff["tr_low"] <= target:
+            exit_type = "TARGET"
+            exit_price = target
             exit_time = stoploss_target_sqoff["tr_time"]
     if stoploss_target_sqoff_filter.empty:
         sqoff_row = fnoieddf.loc[
@@ -269,9 +273,21 @@ def apply_exit_conditions(
 
     return exit_type, exit_price, exit_time
 
+def add_lotsize_column(lotsize_df, fnoied_df):
+    """It matches the dates from the resulting dataframe
+      with the lotsize dataframe and
+      takes the respective values of lotsize column
+    and places it in the resulting data frame
+    Returns lotsize column
+    """
+    filter_dates_list = fnoied_df["tr_date"].unique()
+    lotsize_df = lotsize_df[lotsize_df["tr_date"].isin(filter_dates_list)]
+    date_lotsize_mapping = dict(zip(lotsize_df["tr_date"], lotsize_df["Lot_Size"]))
+    fnoied_df["lotsize"] = fnoied_df["tr_date"].map(date_lotsize_mapping)
+    # print(fnoied_df)
+    return fnoied_df
 
-
-def process_data_for_date(bnifty_df, fnoieddf):
+def process_data_for_date(bnifty_df, fnoieddf,lotsize_df):
     """
     Process and analyze data for a specific date.
 
@@ -301,6 +317,7 @@ def process_data_for_date(bnifty_df, fnoieddf):
 
     stoploss_target_combo = json.loads(TARGET_STOPLOSS_VALUES)
     stoploss_value = stoploss_target_combo[1][1]
+    target_value = stoploss_target_combo[0][1]
 
     find_close_price = (
         fnoieddf.groupby(["tr_date", "otype"])
@@ -330,7 +347,8 @@ def process_data_for_date(bnifty_df, fnoieddf):
     print("FIND ENTRY TIME")
     print(find_close_price)
     find_close_price = find_close_price.assign(
-        stoploss=find_close_price["temp_entry_price"] * stoploss_value
+        stoploss=find_close_price["temp_entry_price"] * stoploss_value,
+        target=find_close_price["temp_entry_price"] * target_value
     )
     print("stoploss")
     print(find_close_price)
@@ -342,6 +360,7 @@ def process_data_for_date(bnifty_df, fnoieddf):
             row["strike_price"],
             row["otype"],
             row["stoploss"],
+            row["target"],
             row["entry_time"],
             SQUAREOFF_TIME,
             fnoieddf,
@@ -399,6 +418,9 @@ def process_data_for_date(bnifty_df, fnoieddf):
                     fnoieddf,
             )
             stoploss_row["stoploss"]=stoploss_row["temp_entry_price"] * stoploss_value
+            stoploss_row["target"]=stoploss_row["temp_entry_price"] * target_value
+            #Re-entry time is stored in trtime and u can differentiate which row is rentried
+            #based on the time 
             if stoploss_row["tr_time"] is not None:
                 stoploss_row[
         ["exit_type", "exit_price", "exit_time"]
@@ -407,6 +429,7 @@ def process_data_for_date(bnifty_df, fnoieddf):
             stoploss_row["strike_price"],
             stoploss_row["otype"],
             stoploss_row["stoploss"],
+            stoploss_row["target"],
             stoploss_row["tr_time"],
             SQUAREOFF_TIME,
             fnoieddf,
@@ -418,9 +441,15 @@ def process_data_for_date(bnifty_df, fnoieddf):
             print(stoploss_row_df)
     # Finally, return the 'stoploss_row' DataFrame after processing
     combined_df = pd.concat([find_close_price, stoploss_accumulator], ignore_index=True)
+    # Step 5: Add lot size column and prepare final DataFrame
+    find_exit_conditions = add_lotsize_column(lotsize_df, combined_df)
+    # Step 6: Adding Profit and Loss Column
+    find_exit_conditions["PNL"] = (
+        find_exit_conditions["temp_entry_price"] - find_exit_conditions["exit_price"]
+    ) * find_exit_conditions["lotsize"]
     print("----------------------------------------------FINAL DATAFRAME------------------------------------------------------------------")
     
-    return  combined_df
+    return  find_exit_conditions
 
 
 
@@ -473,7 +502,7 @@ def main():
 
         if (bnifty_df.empty and fnoieddf.empty):
             continue
-        data_for_date = process_data_for_date(bnifty_df, fnoieddf)
+        data_for_date = process_data_for_date(bnifty_df, fnoieddf,lotsize_df)
         # Append data_for_date to the list of DataFrames
         data_2019.append(data_for_date)
 
